@@ -113,20 +113,28 @@ class Loan(models.Model):
             except Loan.DoesNotExist:
                 pass
         
-        # Validate book availability for new loans
+        # Validate book availability for new loans or status change to borrowing
         if is_new and self.status == 'borrowing':
             if self.book.available <= 0:
                 raise ValidationError(f'Sách "{self.book.title}" đã hết. Không thể mượn.')
+        elif not is_new and old_status == 'returned' and self.status == 'borrowing':
+            # Changing from returned to borrowing: check availability
+            if self.book.available <= 0:
+                raise ValidationError(f'Sách "{self.book.title}" đã hết. Không thể chuyển về trạng thái đang mượn.')
         
         # Save the loan
         super().save(*args, **kwargs)
         
-        # Update book availability
+        # Update book availability based on status changes
         if is_new and self.status == 'borrowing':
             # New loan: decrease available
             self.book.available -= 1
             self.book.save()
         elif not is_new and old_status == 'borrowing' and self.status == 'returned':
-            # Loan returned: increase available
+            # Changed from borrowing to returned: increase available
             self.book.available += 1
+            self.book.save()
+        elif not is_new and old_status == 'returned' and self.status == 'borrowing':
+            # Changed from returned to borrowing: decrease available
+            self.book.available -= 1
             self.book.save()
