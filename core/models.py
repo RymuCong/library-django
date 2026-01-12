@@ -4,25 +4,21 @@ from datetime import timedelta, date
 
 
 class Category(models.Model):
-    """Thể loại sách"""
     name = models.CharField(max_length=100, verbose_name="Tên thể loại")
     
     class Meta:
-        verbose_name = "Thể loại"
-        verbose_name_plural = "Thể loại"
+        verbose_name = verbose_name_plural = "Thể loại"
     
     def __str__(self):
         return self.name
 
 
 class ActiveBookManager(models.Manager):
-    """Custom manager to filter only active books by default"""
     def get_queryset(self):
         return super().get_queryset().filter(is_active=True)
 
 
 class Book(models.Model):
-    """Kho sách"""
     code = models.CharField(max_length=50, unique=True, verbose_name="Mã sách")
     title = models.CharField(max_length=200, verbose_name="Tên sách")
     category = models.ForeignKey(Category, on_delete=models.PROTECT, verbose_name="Thể loại")
@@ -33,46 +29,35 @@ class Book(models.Model):
     available = models.IntegerField(verbose_name="Số lượng hiện có")
     is_active = models.BooleanField(default=True, verbose_name="Đang sử dụng")
     
-    # Use custom manager
     objects = ActiveBookManager()
-    all_objects = models.Manager()  # Access all books including inactive
+    all_objects = models.Manager()
     
     class Meta:
-        verbose_name = "Sách"
-        verbose_name_plural = "Sách"
+        verbose_name = verbose_name_plural = "Sách"
     
     def __str__(self):
         return f"{self.code} - {self.title}"
     
     def clean(self):
-        """Validate available quantity"""
-        if self.available < 0:
-            raise ValidationError({'available': 'Số lượng hiện có không thể âm'})
-        if self.available > self.total_quantity:
-            raise ValidationError({'available': 'Số lượng hiện có không thể lớn hơn tổng số lượng'})
+        if self.available < 0 or self.available > self.total_quantity:
+            raise ValidationError({'available': 'Số lượng không hợp lệ'})
 
 
 class Reader(models.Model):
-    """Bạn đọc"""
     card_id = models.CharField(max_length=50, unique=True, verbose_name="Mã thẻ")
     full_name = models.CharField(max_length=200, verbose_name="Họ tên")
     phone = models.CharField(max_length=20, verbose_name="Số điện thoại")
     created_at = models.DateField(auto_now_add=True, verbose_name="Ngày cấp thẻ")
     
     class Meta:
-        verbose_name = "Bạn đọc"
-        verbose_name_plural = "Bạn đọc"
+        verbose_name = verbose_name_plural = "Bạn đọc"
     
     def __str__(self):
         return f"{self.card_id} - {self.full_name}"
 
 
 class Loan(models.Model):
-    """Phiếu mượn sách"""
-    STATUS_CHOICES = [
-        ('borrowing', 'Đang mượn'),
-        ('returned', 'Đã trả'),
-    ]
+    STATUS_CHOICES = [('borrowing', 'Đang mượn'), ('returned', 'Đã trả')]
     
     reader = models.ForeignKey(Reader, on_delete=models.PROTECT, verbose_name="Bạn đọc")
     book = models.ForeignKey(Book, on_delete=models.PROTECT, related_name='loans', verbose_name="Sách")
@@ -82,59 +67,109 @@ class Loan(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='borrowing', verbose_name="Trạng thái")
     
     class Meta:
-        verbose_name = "Phiếu mượn"
-        verbose_name_plural = "Phiếu mượn"
+        verbose_name = verbose_name_plural = "Phiếu mượn"
     
     def __str__(self):
         return f"{self.reader.full_name} - {self.book.title}"
     
     @property
     def fine(self):
-        """Calculate fine for overdue returns (1,000 VNĐ per day)"""
         if self.return_date and self.return_date > self.due_date:
-            overdue_days = (self.return_date - self.due_date).days
-            return overdue_days * 1000
+            return (self.return_date - self.due_date).days * 1000
         return 0
     
     def save(self, *args, **kwargs):
-        # Auto-set due_date if not provided (14 days from borrow_date)
         if not self.due_date:
             self.due_date = self.borrow_date + timedelta(days=14)
         
-        # Check if this is a new loan
         is_new = self.pk is None
+        old_status = None if is_new else Loan.objects.filter(pk=self.pk).values_list('status', flat=True).first()
         
-        # Get old status if updating
-        old_status = None
-        if not is_new:
-            try:
-                old_loan = Loan.objects.get(pk=self.pk)
-                old_status = old_loan.status
-            except Loan.DoesNotExist:
-                pass
+        if (is_new or old_status == 'returned') and self.status == 'borrowing' and self.book.available <= 0:
+            raise ValidationError(f'Sách "{self.book.title}" đã hết')
         
-        # Validate book availability for new loans or status change to borrowing
-        if is_new and self.status == 'borrowing':
-            if self.book.available <= 0:
-                raise ValidationError(f'Sách "{self.book.title}" đã hết. Không thể mượn.')
-        elif not is_new and old_status == 'returned' and self.status == 'borrowing':
-            # Changing from returned to borrowing: check availability
-            if self.book.available <= 0:
-                raise ValidationError(f'Sách "{self.book.title}" đã hết. Không thể chuyển về trạng thái đang mượn.')
-        
-        # Save the loan
         super().save(*args, **kwargs)
         
-        # Update book availability based on status changes
         if is_new and self.status == 'borrowing':
-            # New loan: decrease available
             self.book.available -= 1
             self.book.save()
-        elif not is_new and old_status == 'borrowing' and self.status == 'returned':
-            # Changed from borrowing to returned: increase available
-            self.book.available += 1
-            self.book.save()
-        elif not is_new and old_status == 'returned' and self.status == 'borrowing':
-            # Changed from returned to borrowing: decrease available
-            self.book.available -= 1
+        elif not is_new and old_status != self.status:
+            if old_status == 'borrowing' and self.status == 'returned':
+                self.book.available += 1
+                self.book.save()
+                next_res = Reservation.objects.filter(book=self.book, status='waiting').order_by('reserved_date').first()
+                if next_res:
+                    next_res.status = 'ready'
+                    next_res.notified_date = date.today()
+                    next_res.expire_date = date.today() + timedelta(days=3)
+                    next_res.save()
+            elif old_status == 'returned' and self.status == 'borrowing':
+                self.book.available -= 1
+                self.book.save()
+
+
+class Reservation(models.Model):
+    STATUS_CHOICES = [('waiting', 'Đang chờ'), ('ready', 'Sẵn sàng nhận'), 
+                      ('fulfilled', 'Đã nhận'), ('cancelled', 'Đã hủy'), ('expired', 'Hết hạn')]
+    
+    reader = models.ForeignKey(Reader, on_delete=models.PROTECT, verbose_name="Bạn đọc")
+    book = models.ForeignKey(Book, on_delete=models.PROTECT, related_name='reservations', verbose_name="Sách")
+    reserved_date = models.DateField(default=date.today, verbose_name="Ngày đặt")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='waiting', verbose_name="Trạng thái")
+    notified_date = models.DateField(null=True, blank=True, verbose_name="Ngày thông báo")
+    expire_date = models.DateField(null=True, blank=True, verbose_name="Hạn nhận sách")
+    notes = models.TextField(blank=True, verbose_name="Ghi chú")
+    
+    class Meta:
+        verbose_name = verbose_name_plural = "Đặt trước sách"
+        ordering = ['reserved_date']
+    
+    def __str__(self):
+        return f"{self.reader.full_name} - {self.book.title} ({self.get_status_display()})"
+    
+    @property
+    def queue_position(self):
+        if self.status != 'waiting':
+            return None
+        return Reservation.objects.filter(book=self.book, status='waiting', reserved_date__lt=self.reserved_date).count() + 1
+    
+    def save(self, *args, **kwargs):
+        if self.status == 'ready' and self.expire_date and date.today() > self.expire_date:
+            self.status = 'expired'
+        super().save(*args, **kwargs)
+
+
+class Damage(models.Model):
+    DAMAGE_TYPE_CHOICES = [('lost', 'Mất sách'), ('torn', 'Rách/Hư hỏng nặng'), 
+                           ('water_damaged', 'Ướt/Hư do nước'), ('minor', 'Hư hỏng nhẹ')]
+    
+    loan = models.ForeignKey(Loan, on_delete=models.PROTECT, verbose_name="Phiếu mượn")
+    book = models.ForeignKey(Book, on_delete=models.PROTECT, related_name='damages', verbose_name="Sách")
+    reader = models.ForeignKey(Reader, on_delete=models.PROTECT, verbose_name="Bạn đọc")
+    damage_type = models.CharField(max_length=20, choices=DAMAGE_TYPE_CHOICES, verbose_name="Loại hư hỏng")
+    reported_date = models.DateField(default=date.today, verbose_name="Ngày phát hiện")
+    compensation_fee = models.IntegerField(verbose_name="Phí bồi thường")
+    is_paid = models.BooleanField(default=False, verbose_name="Đã thanh toán")
+    notes = models.TextField(blank=True, verbose_name="Ghi chú")
+    
+    class Meta:
+        verbose_name = verbose_name_plural = "Hư hỏng sách"
+        ordering = ['-reported_date']
+    
+    def __str__(self):
+        return f"{self.book.title} - {self.get_damage_type_display()} ({self.reader.full_name})"
+    
+    def save(self, *args, **kwargs):
+        if not self.compensation_fee:
+            fees = {'lost': self.book.price * 2, 'torn': self.book.price, 
+                    'water_damaged': self.book.price, 'minor': int(self.book.price * 0.3)}
+            self.compensation_fee = fees.get(self.damage_type, 0)
+        
+        is_new = self.pk is None
+        super().save(*args, **kwargs)
+        
+        if is_new and self.damage_type == 'lost':
+            self.book.total_quantity -= 1
+            if self.book.available > self.book.total_quantity:
+                self.book.available = self.book.total_quantity
             self.book.save()
