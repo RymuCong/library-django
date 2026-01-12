@@ -97,46 +97,9 @@ class Loan(models.Model):
             if old_status == 'borrowing' and self.status == 'returned':
                 self.book.available += 1
                 self.book.save()
-                next_res = Reservation.objects.filter(book=self.book, status='waiting').order_by('reserved_date').first()
-                if next_res:
-                    next_res.status = 'ready'
-                    next_res.notified_date = date.today()
-                    next_res.expire_date = date.today() + timedelta(days=3)
-                    next_res.save()
             elif old_status == 'returned' and self.status == 'borrowing':
                 self.book.available -= 1
                 self.book.save()
-
-
-class Reservation(models.Model):
-    STATUS_CHOICES = [('waiting', 'Đang chờ'), ('ready', 'Sẵn sàng nhận'), 
-                      ('fulfilled', 'Đã nhận'), ('cancelled', 'Đã hủy'), ('expired', 'Hết hạn')]
-    
-    reader = models.ForeignKey(Reader, on_delete=models.PROTECT, verbose_name="Bạn đọc")
-    book = models.ForeignKey(Book, on_delete=models.PROTECT, related_name='reservations', verbose_name="Sách")
-    reserved_date = models.DateField(default=date.today, verbose_name="Ngày đặt")
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='waiting', verbose_name="Trạng thái")
-    notified_date = models.DateField(null=True, blank=True, verbose_name="Ngày thông báo")
-    expire_date = models.DateField(null=True, blank=True, verbose_name="Hạn nhận sách")
-    notes = models.TextField(blank=True, verbose_name="Ghi chú")
-    
-    class Meta:
-        verbose_name = verbose_name_plural = "Đặt trước sách"
-        ordering = ['reserved_date']
-    
-    def __str__(self):
-        return f"{self.reader.full_name} - {self.book.title} ({self.get_status_display()})"
-    
-    @property
-    def queue_position(self):
-        if self.status != 'waiting':
-            return None
-        return Reservation.objects.filter(book=self.book, status='waiting', reserved_date__lt=self.reserved_date).count() + 1
-    
-    def save(self, *args, **kwargs):
-        if self.status == 'ready' and self.expire_date and date.today() > self.expire_date:
-            self.status = 'expired'
-        super().save(*args, **kwargs)
 
 
 class Damage(models.Model):
@@ -144,8 +107,6 @@ class Damage(models.Model):
                            ('water_damaged', 'Ướt/Hư do nước'), ('minor', 'Hư hỏng nhẹ')]
     
     loan = models.ForeignKey(Loan, on_delete=models.PROTECT, verbose_name="Phiếu mượn")
-    book = models.ForeignKey(Book, on_delete=models.PROTECT, related_name='damages', verbose_name="Sách")
-    reader = models.ForeignKey(Reader, on_delete=models.PROTECT, verbose_name="Bạn đọc")
     damage_type = models.CharField(max_length=20, choices=DAMAGE_TYPE_CHOICES, verbose_name="Loại hư hỏng")
     reported_date = models.DateField(default=date.today, verbose_name="Ngày phát hiện")
     compensation_fee = models.IntegerField(verbose_name="Phí bồi thường")
@@ -155,6 +116,14 @@ class Damage(models.Model):
     class Meta:
         verbose_name = verbose_name_plural = "Hư hỏng sách"
         ordering = ['-reported_date']
+    
+    @property
+    def book(self):
+        return self.loan.book
+    
+    @property
+    def reader(self):
+        return self.loan.reader
     
     def __str__(self):
         return f"{self.book.title} - {self.get_damage_type_display()} ({self.reader.full_name})"

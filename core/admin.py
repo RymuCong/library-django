@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.db.models import Count
 from django.utils.html import format_html
-from .models import Category, Book, Reader, Loan, Reservation, Damage
+from .models import Category, Book, Reader, Loan, Damage
 
 
 @admin.register(Category)
@@ -38,27 +38,15 @@ class LoanInline(admin.TabularInline):
         return False
 
 
-class ReservationInline(admin.TabularInline):
-    model = Reservation
-    extra = 0
-    fields = ['book', 'reserved_date', 'status', 'notified_date', 'expire_date']
-
-
-class DamageInline(admin.TabularInline):
-    model = Damage
-    extra = 0
-    fields = ['book', 'damage_type', 'reported_date', 'compensation_fee', 'is_paid']
-
-
 @admin.register(Reader)
 class ReaderAdmin(admin.ModelAdmin):
     list_display = ['card_id', 'full_name', 'phone', 'created_at', 'unpaid_damages_count']
     search_fields = ['card_id', 'full_name', 'phone']
-    inlines = [LoanInline, ReservationInline, DamageInline]
+    inlines = [LoanInline]
     
     @admin.display(description='Nợ bồi thường')
     def unpaid_damages_count(self, obj):
-        unpaid = Damage.objects.filter(reader=obj, is_paid=False).count()
+        unpaid = Damage.objects.filter(loan__reader=obj, is_paid=False).count()
         if unpaid > 0:
             return format_html('<span style="color: red; font-weight: bold;">{} chưa trả</span>', unpaid)
         return "0"
@@ -83,28 +71,22 @@ class LoanAdmin(admin.ModelAdmin):
         return '0 VNĐ'
 
 
-@admin.register(Reservation)
-class ReservationAdmin(admin.ModelAdmin):
-    list_display = ['reader', 'book', 'reserved_date', 'status', 'display_queue_position', 'notified_date', 'expire_date']
-    list_filter = ['status', 'reserved_date']
-    search_fields = ['reader__card_id', 'reader__full_name', 'book__code', 'book__title']
-    
-    def get_queryset(self, request):
-        return super().get_queryset(request).select_related('book', 'reader')
-    
-    @admin.display(description='Vị trí')
-    def display_queue_position(self, obj):
-        return f"#{obj.queue_position}" if obj.queue_position else "-"
-
-
 @admin.register(Damage)
 class DamageAdmin(admin.ModelAdmin):
-    list_display = ['book', 'reader', 'damage_type', 'reported_date', 'display_compensation', 'is_paid', 'loan']
+    list_display = ['get_book', 'get_reader', 'damage_type', 'reported_date', 'display_compensation', 'is_paid', 'loan']
     list_filter = ['damage_type', 'is_paid', 'reported_date']
-    search_fields = ['reader__card_id', 'reader__full_name', 'book__code', 'book__title']
+    search_fields = ['loan__reader__card_id', 'loan__reader__full_name', 'loan__book__code', 'loan__book__title']
     
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related('book', 'reader', 'loan')
+        return super().get_queryset(request).select_related('loan__book', 'loan__reader')
+    
+    @admin.display(description='Sách', ordering='loan__book__title')
+    def get_book(self, obj):
+        return obj.book.title
+    
+    @admin.display(description='Bạn đọc', ordering='loan__reader__full_name')
+    def get_reader(self, obj):
+        return obj.reader.full_name
     
     @admin.display(description='Phí bồi thường', ordering='compensation_fee')
     def display_compensation(self, obj):
